@@ -24,6 +24,11 @@
 -define(MAX_IP6_MASK, 128).
 -define(JSONB_VERSION_1, 1).
 
+-define(NBASE, 10000).
+-define(NDIGITS, 4).
+-define(NPOS, 0).     %% #0x0000
+-define(NNEG, 16384). %% #0x4000
+
 new_codec([]) -> #codec{}.
 
 update_type_cache(TypeInfos, Codec) ->
@@ -59,6 +64,8 @@ encode(int4, N, _)                          -> <<4:?int32, N:1/big-signed-unit:3
 encode(int8, N, _)                          -> <<8:?int32, N:1/big-signed-unit:64>>;
 encode(float4, N, _)                        -> <<4:?int32, N:1/big-float-unit:32>>;
 encode(float8, N, _)                        -> <<8:?int32, N:1/big-float-unit:64>>;
+encode(numeric, N, _) when is_integer(N)    -> encode_numeric({N,0});
+encode(numeric, {_,_}=D, _)                 -> encode_numeric(D);
 encode(bpchar, C, _) when is_integer(C)     -> <<1:?int32, C:1/big-unsigned-unit:8>>;
 encode(bpchar, B, _) when is_binary(B)      -> <<(byte_size(B)):?int32, B/binary>>;
 encode(time = Type, B, _)                   -> ?datetime:encode(Type, B);
@@ -93,6 +100,7 @@ decode(int4, <<N:1/big-signed-unit:32>>, _)    -> N;
 decode(int8, <<N:1/big-signed-unit:64>>, _)    -> N;
 decode(float4, <<N:1/big-float-unit:32>>, _)   -> N;
 decode(float8, <<N:1/big-float-unit:64>>, _)   -> N;
+decode(numeric, B, _)                          -> decode_numeric(B);
 decode(record, <<_:?int32, Rest/binary>>, Codec) -> list_to_tuple(decode_record(Rest, [], Codec));
 decode(jsonb, <<?JSONB_VERSION_1:8, Value/binary>>, _) -> Value;
 decode(time = Type, B, _)                      -> ?datetime:decode(Type, B);
@@ -285,6 +293,64 @@ decode_int8range(<<8:1/big-signed-unit:8, 8:?int32, To:?int64>>) -> {minus_infin
 decode_int8range(<<18:1/big-signed-unit:8, 8:?int32, From:?int64>>) -> {From, plus_infinity};
 decode_int8range(<<24:1/big-signed-unit:8>>) -> {minus_infinity, plus_infinity}.
 
+encode_numeric(Decimal) ->
+    {Base, Exponent} = align(Decimal),
+    case Base < 0 of
+        true ->
+            Sign = ?NNEG,
+            AbsBase = -Base;
+        false ->
+            Sign = ?NPOS,
+            AbsBase = Base
+    end,
+    Digits = to_digits(AbsBase),
+    encode_numeric(Sign, Digits, Exponent).
+
+align(Decimal) ->
+    {Base, Exponent} = reduce(Decimal),
+    Shift = case (abs(Exponent) rem ?NDIGITS) of
+        0 -> 0;
+        Diff when Exponent < 0 -> ?NDIGITS - Diff;
+        Diff -> Diff
+    end,
+    {Base * trunc(math:pow(10, Shift)), Exponent-Shift}.
+
+encode_numeric(Sign, Digits, Exponent) ->
+    NDigits = length(Digits),
+    Dscale = max(-Exponent, 0),
+    Weight = (NDigits - 1) + (Exponent div ?NDIGITS),
+    BinaryDigits = << <<D:?int16>> || D <- Digits >>,
+    Res = <<NDigits:?int16, Weight:?int16, Sign:?int16, Dscale:?int16, BinaryDigits/binary>>,
+    <<(byte_size(Res)):?int32,Res/binary>>.
+
+to_digits(Number) -> to_digits(Number, []).
+to_digits(0, Acc) -> Acc;
+to_digits(Number, Acc) ->
+    D1 = Number rem ?NBASE,
+    Rest = Number div ?NBASE,
+    to_digits(Rest, [D1|Acc]).
+
+%% @doc decode decimal
+decode_numeric(N) when is_binary(N) ->
+    <<NDigits:?int16, Weight:?int16, Sign:?int16, _Dscale:?int16, Rest/binary>> = N,
+    Base = lists:foldl(fun(A, Acc) ->
+        Acc*?NBASE + A
+    end, 0, [Num || <<Num:1/big-signed-unit:16>> <= Rest]),
+    BaseR = case Sign of
+        ?NNEG -> -Base; %% 0x4000
+        ?NPOS -> Base
+    end,
+    Exponent = -(NDigits - Weight - 1) * ?NDIGITS,
+    reduce({BaseR, Exponent}).
+
+reduce({Int, E}) -> reduce_(Int, E).
+reduce_(0, _E) -> {0, 0};
+reduce_(Int, E) ->
+    case Int rem 10 of
+        0 -> reduce_(Int div 10, E+1);
+        _ -> {Int, E}
+    end.
+
 supports(bool)    -> true;
 supports(bpchar)  -> true;
 supports(int2)    -> true;
@@ -292,6 +358,7 @@ supports(int4)    -> true;
 supports(int8)    -> true;
 supports(float4)  -> true;
 supports(float8)  -> true;
+supports(numeric) -> true;
 supports(bytea)   -> true;
 supports(text)    -> true;
 supports(varchar) -> true;
@@ -316,6 +383,7 @@ supports({array, int4})   -> true;
 supports({array, int8})   -> true;
 supports({array, float4}) -> true;
 supports({array, float8}) -> true;
+supports({array, numeric})-> true;
 supports({array, char})   -> true;
 supports({array, text})   -> true;
 supports({array, date})   -> true;
