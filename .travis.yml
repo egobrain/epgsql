@@ -1,20 +1,22 @@
+addons:
+  postgresql: "9.6"
+  apt:
+    packages:
+      - postgresql-9.6-postgis-2.3
+      - postgresql-contrib-9.6
+before_script:
+  - wget https://s3.amazonaws.com/rebar3/rebar3
+  - chmod u+x ./rebar3
+env:
+  - PATH=".:/usr/lib/postgresql/9.6/bin:$PATH"
+install: "true"
 language: erlang
 otp_release:
-  - R15B03
-  - R16B03-1
-  - 17.4
-  - 18.2
+  - 20.0
   - 19.1
-before_script:
-  - sudo apt-get update -qq
-  - sudo apt-get install postgresql-9.4-postgis-2.1 postgresql-contrib-9.4
-addons:
-  postgresql: "9.4"
+  - 18.3
+  - 17.4
+  - R16B03-1
 script:
-  - sudo chmod 777 /var/run/postgresql/
-  - ./setup_test_db.sh
-  - ./start_test_db.sh &
-  - sleep 1
-  - make create_testdbs
   - make test
-
+  - make dialyzer
